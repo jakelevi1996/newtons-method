@@ -6,20 +6,63 @@ line-search. Also includes a Result class, for storing the results of each
 optimisation routine, and displaying progress and summaries of each optimisation
 routine
 
+The functions in this module should ideally fulfil the following properties:
+-   When doing line-search for generalised Newton's method, when getting close
+    to the optimum, the step-size should converge to 1 (this should hopefully
+    allow similar performance to having no line-search near the optimum)
+    -   Could this be achieved by replacing the backtrack condition with
+        "iterate backwards until the backtrack condition is fulfilled, AND the
+        objective function stops decreasing"? This would probably mean the new
+        objective function value should be calculated outside of the backtrack
+        condition function and passed in as an argument
+-   When getting close to the optimum, line-search calls should be very cheap
+    (maximum 1 iteration per call), and forward-optimal should be cheaper per
+    iteration close to the optimum than forward-backtrack
+-   When starting far away from the optimum, line-search for generalised
+    Newton's method should not be performing worse than no line-search
+-   Should gradient-descent with line-search be able to succeed without the
+    step-size diverging, when starting far away from the optimum?
+
+
+TODO: Question: for Generalised Newton, why is forward-optimal line-search
+> 4x slower than forward-backtrack line-search? Is it due to behaviour, EG the
+step-size fluctuating? Can the line-search function be altered to change this?
+NB forward-optimal uses final-backstep, which is not true for
+forward-backtrack...
+-   NB both forward-optimal and forward-backtrack both reach f(x)=0e+0 in the
+    same time, however forward-optimal does so in fewer iterations (12 vs 40).
+    So it must be the fact that whatever happens in later iterations for
+    forward-optimal is less efficient than forward-backtrack?
+-   Why does no line-search make it to x = 0, step = 0, even when convergence
+    during the first 25 iterations is much slower? Why do the other methods not
+    have s = 1 as x -> 0?
+-       NB Generalised Newton is the only method that succeeds with x0 =
+        10*np.array([1.0, 1.0, 1.0]), and does so after 607 iterations. Why is
+        line-search performing worse than no line-search (IE always keeping s =
+        1) in this situation?
+
 TODO:
+-   Use functions which have callable arguments get_step and (shared) minimise,
+    instead of classes which inherit from Minimiser
+    -   get_step functions could come from custom classes which define
+        parameters in an __init__ method
 -   *Line-search forward tracking: until objective function no longer increases
+-   Turn Minimiser class into a _minimise private function, which takes a
+    get_step callable argument; for each minimiser, implement a get_step
+    function, and a wrapper for the _minimise function
 -   Timeout and evaluations based on elapsed time, not number of iterations
 -   Objective function evaluations performed in a separate process? Does this
     make things quicker?
 -   Optimisers to include:
     -   Adam
     -   PSO
-    -   Examples from Antoniou/Nocedal, EG conjugate gradients, L?
+    -   Examples from Antoniou/Nocedal, EG conjugate gradients, LBGFS?
 """
 
 import numpy as np
 from time import perf_counter
 import objectives
+import warnings
 
 
 class Result():
@@ -27,6 +70,10 @@ class Result():
     Class to store the results of optimisation in a single object which can be
     passed directly to plotting and/or analysis functions, as well as methods
     for updating and displaying results
+
+    TODO: Make this class configurable, so columns such as step-size and |x| are
+    optional, and the column width and format spec for each column is
+    configurable. Also implement saving and loading of results
     """
     def __init__(self, name):
         """
@@ -41,24 +88,30 @@ class Result():
         self.objective = []
         self.times = []
         self.iters = []
+        self.step_size = []
+        self.x_norm = []
         self.start_time = perf_counter()
     
-    def update(self, f, i):
+    def update(self, i, f, s, x, verbose=True):
         t = perf_counter() - self.start_time
         self.objective.append(f)
         self.times.append(t)
         self.iters.append(i)
+        self.step_size.append(s)
+        self.x_norm.append(np.linalg.norm(x))
+        if verbose: self.display_last()
     
     def display_headers(self):
         # num_fields, field_width = 3, 10
         print("\nPerforming test \"{}\"...".format(self.name))
-        print(" | ".join(["{:10}"] * 3).format(
-            "Iteration", "Time (s)", "Objective function"))
-        print(" | ".join(["-" * 10] * 3))
+        print(" | ".join(["{:10}"] * 5).format("Iteration", "Time (s)",
+            "Objective", "Step size", "|x|"))
+        print(" | ".join(["-" * 10] * 5))
 
     def display_last(self):
-        print("{:10d} | {:10.2f} | {:10.7e}".format(
-            self.iters[-1], self.times[-1], self.objective[-1]))
+        print("{:10d} | {:10.3f} | {:10.3e} | {:10.3e} | {:10.3e}".format(
+            self.iters[-1], self.times[-1], self.objective[-1],
+            self.step_size[-1], self.x_norm[-1]))
 
     
     def display_summary(self, n_iters):
@@ -78,15 +131,94 @@ class Result():
     def load(self, filename): raise NotImplementedError
 
 
-def backtrack_condition(s, f, x, delta, alpha, dfdx, f0):
+def backtrack_condition(s, f, x, delta, f0, dfdx, alpha, tol=1e-15):
     """
     Compares the actual reduction in the objective function to that which is
     expected from a first-order Taylor expansion. Returns True if a reduction in
-    the step size is needed according to this criteria, otherwise returns False
+    the step size is needed according to this criteria, otherwise returns False.
+
+    Added tolerance because if delta is very small, x + s * delta == x (within
+    floating point arithmetic), => f0 == f(x + s * delta), => reduction == 0, =>
+    return value is always true => infinite loop
     """
-    reduction = f0 - f(x + s * delta)
+    x_new = x + s * delta
+    # If s -> 0, then x_new -> x, in which case don't continue back-tracking
+    # TODO: compare np.all(x_new == x) vs np.array_equal(x, x_new) for
+    # performance, and also compare to not using any checking 
+    reduction = f0 - f(x_new)
+    if reduction == 0:
+        return False
+        # if np.all(x_new == x): return False
+    # Alternatively: just check if s == 0?? What to do if s == 0?
     expected_reduction = -s * np.dot(delta, dfdx)
+    # return reduction + tol < (alpha * expected_reduction)
     return reduction < (alpha * expected_reduction)
+
+def line_search(
+    x, s, step, f, dfdx, alpha, beta, 
+    forward_backtrack_condition, final_backstep
+):
+    """
+    do line_search...
+
+    How to handle the case that step or s is so small that x + s * delta == x?
+    Prevent from infinite back-tracking by checking for change in x, prevent
+    from infinite forward tracking by checking that s is finite, and if s
+    diverges, then return the input s / beta, so at least after many iterations,
+    x + s * delta != x, and x can start to move towards a minimum.
+
+    TODO: this seems better, except for the following experiment:
+    GradientDescent(lr, name="SGD, optimal forward LS").minimise(f, x0, 10000,
+    print_every, True, forward_backtrack_condition=False, final_backstep=True)
+    ... after 1023 iterations, s -> inf, |x| ~~ 1e9, |step| = 0; the step must
+    be being followed, but x has diverged away from the minimum
+
+    TODO: update comments, and compare performance of different combinations of
+    forward_backtrack_condition and final_backstep; if there is a clear best
+    choice for a range of different starting conditions, then remove redundant
+    choices
+
+    What TODO if s == 0?
+    """
+    f_old, s_old = f(x), s
+    backtrack_params = (f, x, step, f_old, dfdx, alpha)
+
+    if backtrack_condition(s, *backtrack_params):
+        # Reduce step size until error reduction is good enough
+        s *= beta
+        while backtrack_condition(s, *backtrack_params):
+            # print("\tBacktracking")
+            s *= beta
+    else:
+        # Increase step size until reduction is not good enough
+        if forward_backtrack_condition:
+            # Use same backtrack condition to track forwards
+            s /= beta
+            while not backtrack_condition(s, *backtrack_params):
+                s /= beta
+                if not np.isfinite(s):
+                    warnings.warn("s has diverged; resetting t0 s_old/beta ...")
+                    return s_old / beta
+        else:
+            # Track forwards until objective function stops decreasing
+            s /= beta
+            # if not np.isfinite(s):
+            #     print("Debug")
+            f_new = f(x + s * step)
+            while f_new <= f_old:
+                # print("\t", s, f_old)
+                s /= beta
+                # if np.max(np.abs(s*step) > 1e-3):
+                #     print("Big s")
+                if not np.isfinite(s):
+                    warnings.warn("s has diverged; resetting t0 s_old/beta ...")
+                    return s_old / beta
+                f_new, f_old = f(x + s * step), f_new
+            # print(s)
+
+        if final_backstep: s *= beta
+
+    return s
 
 class Minimiser():
     """
@@ -115,13 +247,17 @@ class Minimiser():
         raise NotImplementedError
 
     def minimise(
-        self, f, x0, n_iters=10000, print_every=500, line_search=False, s0=1,
-        alpha=0.8, beta=0.5, final_backstep=False, name=None
+        self, f, x0, n_iters=10000, print_every=500, line_search_flag=False,
+        s0=1, alpha=0.5, beta=0.5, final_backstep=False, name=None,
+        forward_backtrack_condition=True
     ):
         """
         minimisation method (EG optional line-search, recording results,
         displaying a final summary), and calls a get_step method, which should
         be implemented by each specific child class.
+
+        TODO: run tests comparing forward_backtrack_condition True vs False, and
+        remove worse option. Same for final_backstep
         """
         # Set initial parameters and start time
         x, s = x0.copy(), s0
@@ -132,38 +268,28 @@ class Minimiser():
         for i in range(n_iters):
             if i % print_every == 0: #TODO: make this condition time-based
                 # Evaluate the model
-                result.update(f(x), i)
-                result.display_last()
+                result.update(i, f(x), s, x, verbose=True)
             
             # Update parameters
             step, dfdx = self.get_step(f, x)
-            if line_search:
-                backtrack_params = (f, x, step, alpha, dfdx, f(x))
-            
-                if backtrack_condition(s, *backtrack_params):
-                    # Reduce step size until error reduction is good enough
-                    s *= beta
-                    while backtrack_condition(s, *backtrack_params): s *= beta
-                else:
-                    # Increase step size until reduction is not good enough
-
-                    # TODO: I think there needs to be an option for "increase
-                    # until the objective function decreases"; otherwise the
-                    # forward tracking can skip over the maximum
-                    s /= beta
-                    while not backtrack_condition(s, *backtrack_params):
-                        s /= beta
-                    if final_backstep: s *= beta
+            # Check if step = 0; if so, minimisation can't continue
+            if not np.any(step):
+                warnings.warn(
+                    "|step| = 0 during iteration {}; exiting...".format(i))
+                result.update(i, f(x), s, x, verbose=True)
+                return x, result
+            if line_search_flag:
+                s = line_search(x, s, step, f, dfdx, alpha, beta,
+                    forward_backtrack_condition, final_backstep)
                 x += s * step
             else:
                 x += step
 
         # Evaluate final performance
-        result.update(f(x), n_iters)
-        result.display_last()
+        result.update(n_iters, f(x), s, x, verbose=True)
         result.display_summary(n_iters)
 
-        return result
+        return x, result
 
 class GradientDescent(Minimiser):
     """ Class for minimisation using simple gradient-descent """
@@ -196,10 +322,8 @@ class GeneralisedNewton(Minimiser):
         evals, evecs = np.linalg.eigh(hess)
         grad_rot = np.matmul(evecs.T, grad)
         # Take a Newton step in directions in which this step is not too big
-        step_rot = np.where(
-            np.abs(grad_rot) > (np.abs(evals) * self.max_step),
-            -self.learning_rate * grad_rot, -grad_rot / np.abs(evals)
-        )
+        step_rot = np.where((self.max_step * np.abs(evals)) > np.abs(grad_rot),
+            -grad_rot / np.abs(evals), -self.learning_rate * grad_rot)
         # Rotate gradient back into original coordinate system and return
         return np.matmul(evecs, step_rot), grad
 
@@ -210,13 +334,26 @@ def compare_function_times(input_dict_list, n_repeats=5, verbose=True):
     function to be tested. Each dictionary should have func, args and name keys,
     for the function which is to be called, a tuple of args with which it is to
     be called, and the name which is to be printed along with the results.
+
+    Example usage:
+    input_dict_list = [
+        {"func": GradientDescent(lr).minimise,
+            "args": (f, x0, nits, print_every, True),
+            "name": "Gradient descent"},
+        {"func": GeneralisedNewton(lr, max_step).minimise,
+            "args": (f, x0, nits, print_every),
+            "name": "Generalised Newton"}
+    ]
+    compare_function_times(input_dict_list, n_repeats=3)
     """
     t_list = np.empty([len(input_dict_list), n_repeats])
     # Iterate through each input dictionary
     for i, input_dict in enumerate(input_dict_list):
+        # Get function and input
+        func, args = input_dict["func"], input_dict["args"]
         # Iterate through each repeat
         for j in range(n_repeats):
-            func, args = input_dict["func"], input_dict["args"]
+            # Perform experiment
             t0 = perf_counter()
             func(*args)
             t1 = perf_counter()
@@ -235,20 +372,24 @@ def compare_function_times(input_dict_list, n_repeats=5, verbose=True):
 
 
 if __name__ == "__main__":
-    nits = 10000
+    # nits = 1000
+    # x0 = 10*np.array([1.0, 1.0, 1.0])
+    nits = 40
+    x0 = 2*np.array([1.0, 1.0, 1.0])
+    
     print_every = nits // 10
     lr, max_step = 1e-1, 1
-    x0 = 2*np.array([1.0, 1.0, 1.0])
     f = objectives.Gaussian(scale=[1, 2, 3])
-    # Do warmup experiment
-    GradientDescent(lr, name="Warmup").minimise(f, x0, 500, 10)
-    # Compare times
-    input_dict_list = [
-        {"func": GradientDescent(lr).minimise,
-            "args": (f, x0, nits, print_every, True),
-            "name": "Gradient descent"},
-        {"func": GeneralisedNewton(lr, max_step).minimise,
-            "args": (f, x0, nits, print_every),
-            "name": "Generalised Newton"}
-    ]
-    compare_function_times(input_dict_list, n_repeats=3)
+    # # Do warmup experiment
+    GradientDescent(lr, name="Warmup").minimise(f, x0, 500, 100)
+    GradientDescent(lr, name="SGD, optimal forward LS").minimise(f, x0, nits,
+        print_every, True, forward_backtrack_condition=False,
+        final_backstep=True)
+    GeneralisedNewton(lr, max_step).minimise(f, x0, nits, print_every, True,
+        name="Generalised Newton, forward-backtrack line-search")
+    GeneralisedNewton(lr, max_step).minimise(f, x0, nits, print_every, True,
+        name="Generalised Newton, forward-optimal line-search",
+        forward_backtrack_condition=False, final_backstep=True)
+    GeneralisedNewton(lr, max_step).minimise(f, x0, nits, print_every, False,
+        name="Generalised Newton, no line-search")
+    
