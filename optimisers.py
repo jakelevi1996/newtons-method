@@ -1,4 +1,6 @@
 """
+TODO: update comments and docstrings for all functions
+
 Module which contains various different classes for optimisation of a given
 objective function (EG gradient descent, generalised Newton's method), and an
 astract parent class from which they inherit, which implements a 2-way
@@ -84,7 +86,7 @@ class Result():
     optional, and the column width and format spec for each column is
     configurable. Also implement saving and loading of results
     """
-    def __init__(self, name):
+    def __init__(self, name, verbose=True):
         """
         Store the name of the experiment (which is useful later when displaying
         results), display table headers, initialise lists for objective function
@@ -92,7 +94,8 @@ class Result():
         record the start time for the results list
         """
         self.name = name if (name is not None) else "Unnamed experiment"
-        self.display_headers()
+        if verbose: self.display_headers()
+        self.verbose = verbose
 
         self.objective = []
         self.times = []
@@ -101,14 +104,14 @@ class Result():
         self.x_norm = []
         self.start_time = perf_counter()
     
-    def update(self, i, f, s, x, verbose=True):
+    def update(self, i, f, s, x):
         t = perf_counter() - self.start_time
         self.objective.append(f)
         self.times.append(t)
         self.iters.append(i)
         self.step_size.append(s)
         self.x_norm.append(np.linalg.norm(x))
-        if verbose: self.display_last()
+        if self.verbose: self.display_last()
     
     def display_headers(self):
         # num_fields, field_width = 3, 10
@@ -150,22 +153,21 @@ def backtrack_condition(s, f_new, f_0, delta_dot_dfdx, alpha):
     floating point arithmetic), => f0 == f(x + s * delta), => reduction == 0, =>
     return value is always true => infinite loop
     """
-    # If s -> 0, then x_new -> x, in which case don't continue back-tracking
-    # TODO: compare np.all(x_new == x) vs np.array_equal(x, x_new) for
-    # performance, and also compare to not using any checking 
     reduction = f_0 - f_new
-    if reduction == 0:
-        return False
-        # if np.all(x_new == x): return False
-    # Alternatively: just check if s == 0?? What to do if s == 0?
+    if reduction == 0: return False
     expected_reduction = -s * delta_dot_dfdx
-    # return reduction + tol < (alpha * expected_reduction)
     return reduction < (alpha * expected_reduction)
 
-def line_search(
-    x, s, delta, f, dfdx, alpha, beta, 
-    optimal_step, final_backstep
-):
+def check_bad_step_size(s):
+    if s == 0:
+        print("s has converged to 0; resetting t0 s_old * beta ...")
+        return True
+    elif not np.isfinite(s):
+        print("s has diverged; resetting t0 s_old/beta ...")
+        return True
+    else: return False
+
+def line_search(x, s, delta, f, dfdx, alpha, beta, final_backstep):
     """
     do line_search...
 
@@ -177,7 +179,7 @@ def line_search(
 
     TODO: this seems better, except for the following experiment:
     GradientDescent(lr, name="SGD, optimal forward LS").minimise(f, x0, 10000,
-    print_every, True, forward_backtrack_condition=False, final_backstep=True)
+    eval_every, True, forward_backtrack_condition=False, final_backstep=True)
     ... after 1023 iterations, s -> inf, |x| ~~ 1e9, |step| = 0; the step must
     be being followed, but x has diverged away from the minimum
 
@@ -191,170 +193,113 @@ def line_search(
     Whether to increase s at the end of forward tracking should depend on if
     x_new == x_old (first check if f_new == f_old? Do all this in a
     sub-function?)
+
     """
+    # Calculate initial parameters
     f_0, s_old = f(x), s
     delta_dot_dfdx = np.dot(delta, dfdx)
     bt_params = (f_0, delta_dot_dfdx, alpha)
     f_new, f_old = f(x + s * delta), f_0
 
+    # Check initial backtrack condition
     if backtrack_condition(s, f_new, *bt_params):
-        # Reduce step size until error reduction is good enough
+        # Reduce step size until reduction is good enough and stops decreasing
         s *= beta
         f_new, f_old = f(x + s * delta), f_new
-        if optimal_step:
-            # When close to the optimum with small s, it is possible that even
-            # if the backtrack condition is not met, back-tracking will still
-            # lead to an increase in the objective function, so we want to keep
-            # back-tracking until we don't need to back-track AND the objective
-            # function is increasing
-            while backtrack_condition(s, f_new, *bt_params) or f_new < f_old:
-                s *= beta
-                if s == 0:
-                    warnings.warn(
-                        "s has converged to 0; resetting t0 s_old/beta ...")
-                    return s_old * beta
-                f_new, f_old = f(x + s * delta), f_new
-
-            # if final_backstep: s /= beta
-            # if final_backstep and f_new > f_old: s *= beta
-            # TODO 2020-08-03: change and to or?
-            # if final_backstep and f_new > f_old: s /= beta
-            if final_backstep or f_new > f_old: s /= beta
-        else:
-            while backtrack_condition(s, f_new, *bt_params):
-                # print("\tBacktracking")
-                s *= beta
-                f_new = f(x + s * delta)
+        while backtrack_condition(s, f_new, *bt_params) or f_new < f_old:
+            s *= beta
+            if check_bad_step_size(s): return s_old * beta
+            f_new, f_old = f(x + s * delta), f_new
+        if final_backstep or f_new > f_old: s /= beta
     else:
-        # Increase step size until reduction is not good enough
-        if optimal_step:
-            # Track forwards until objective function stops decreasing
+        # Track forwards until objective function stops decreasing
+        s /= beta
+        f_new = f(x + s * delta)
+        while f_new < f_old:
             s /= beta
-            # if not np.isfinite(s):
-            #     print("Debug")
-            f_new = f(x + s * delta)
-            while f_new < f_old:
-                # print("\t", s, f_old)
-                s /= beta
-                # if np.max(np.abs(s*step) > 1e-3):
-                #     print("Big s")
-                if not np.isfinite(s):
-                    warnings.warn(
-                        "s has diverged; resetting t0 s_old/beta ...")
-                    return s_old / beta
-                f_new, f_old = f(x + s * delta), f_new
-            # print(s)
-        else:
-            # Use same backtrack condition to track forwards
-            s /= beta
-            while not backtrack_condition(s, f_new, *bt_params):
-                s /= beta
-                f_new = f(x + s * delta)
-                if not np.isfinite(s):
-                    warnings.warn("s has diverged; resetting t0 s_old/beta ...")
-                    return s_old / beta
-
-        # if final_backstep: s *= beta
-        # if final_backstep and f_new > f_old:
+            if check_bad_step_size(s): return s_old / beta
+            f_new, f_old = f(x + s * delta), f_new
         if final_backstep or f_new > f_old: s *= beta
 
     return s
 
-class Minimiser():
+
+def minimise(
+    f, x0, get_step, n_iters=10000, eval_every=500, line_search_flag=False,
+    s0=1.0, alpha=0.5, beta=0.5, final_backstep=False, name=None, verbose=False
+):
     """
+    ...
+    
     Minimiser: interface for optimisation routines, containing code which is
     common to all minimisation methods, to be inherited by each child class
     (which should be specific to a particular minimisation method). Child
     classes should override the __init__ and get_step methods, whereas the
     minimise method is designed to be common to all optimisation methods.
+    ...
+
+    minimisation method (EG optional line-search, recording results,
+    displaying a final summary), and calls a get_step method, which should
+    be implemented by each specific child class.
     """
-    def __init__(self, name, *args):
-        """
-        Initialisation method for the Minimiser interface. This method should be
-        overridden by the child class and accept arguments specific to the type
-        of optimisation (EG learning rate for gradient descent, max-step and
-        learning rate for generalised-Newton), as well as a default name string
-        """
-        self.name = name
-        raise NotImplementedError
+    # Set initial parameters and start time
+    x, s = x0.copy(), s0
+    # Initialise result object, including start time of iteration
+    result = Result(name, verbose=verbose)
+    for i in range(n_iters):
+        if i % eval_every == 0: #TODO: make this condition time-based
+            # Evaluate the model
+            result.update(i, f(x), s, x)
+        
+        # Update parameters
+        delta, dfdx = get_step(f, x)
+        # Check if delta = 0; if so, minimisation can't continue
+        if not np.any(delta):
+            print("|delta| = 0 during iteration {}; exiting...".format(i))
+            n_iters = i
+            break
+        if line_search_flag:
+            s = line_search(x, s, delta, f, dfdx, alpha, beta, final_backstep)
+            x += s * delta
+        else:
+            x += delta
 
-    def get_step(self, objective, x):
-        """
-        Method to get the descent step during each iteration of minimisation;
-        this should be overridden by each child class which implements a
-        specific minimisation method
-        """
-        raise NotImplementedError
+    # Evaluate final performance
+    result.update(n_iters, f(x), s, x)
+    if verbose: result.display_summary(n_iters)
 
-    def minimise(
-        self, f, x0, n_iters=10000, print_every=500, line_search_flag=False,
-        s0=1.0, alpha=0.5, beta=0.5, final_backstep=False, name=None,
-        optimal_step=False, verbose=False
-    ):
-        """
-        minimisation method (EG optional line-search, recording results,
-        displaying a final summary), and calls a get_step method, which should
-        be implemented by each specific child class.
+    return x, result
 
-        TODO: run tests comparing forward_backtrack_condition True vs False, and
-        remove worse option. Same for final_backstep
-        """
-        # Set initial parameters and start time
-        x, s = x0.copy(), s0
-        # If no name is provided, use the default
-        if name is None: name = self.name
-        # Initialise result object, including start time of iteration
-        result = Result(name)
-        for i in range(n_iters):
-            if i % print_every == 0: #TODO: make this condition time-based
-                # Evaluate the model
-                result.update(i, f(x), s, x, verbose=verbose)
-            
-            # Update parameters
-            delta, dfdx = self.get_step(f, x)
-            # Check if delta = 0; if so, minimisation can't continue
-            if not np.any(delta):
-                warnings.warn(
-                    "|delta| = 0 during iteration {}; exiting...".format(i))
-                result.update(i, f(x), s, x, verbose=verbose)
-                return x, result
-            if line_search_flag:
-                s = line_search(x, s, delta, f, dfdx, alpha, beta,
-                    optimal_step, final_backstep)
-                x += s * delta
-            else:
-                x += delta
-
-        # Evaluate final performance
-        result.update(n_iters, f(x), s, x, verbose=verbose)
-        result.display_summary(n_iters)
-
-        return x, result
-
-class GradientDescent(Minimiser):
-    """ Class for minimisation using simple gradient-descent """
-    def __init__(self, learning_rate=1e-1, name="Gradient descent"):
+class GradientDescentStep:
+    def __init__(self, learning_rate):
         self.learning_rate = learning_rate
-        self.name = name
     
-    def get_step(self, objective, x):
+    def __call__(self, objective, x):
+        """
+        Method to get the descent step during each iteration of gradient-descent
+        minimisation
+        """
         dfdx = objective.dfdx(x)
         return -self.learning_rate * dfdx, dfdx
 
+def gradient_descent(
+    f, x0, learning_rate=1e-1, name="Gradient descent", final_backstep=False,
+    **kwargs
+):
+    get_step = GradientDescentStep(learning_rate)
+    minimise(f, x0, get_step, name=name, final_backstep=final_backstep,
+        **kwargs)
 
-class GeneralisedNewton(Minimiser):
+class GeneralisedNewtonStep:
     """
     Class for minimisation using Newton's method, generalised to non-convex
     objective functions using an eigendecomposition of the Hessian matrix
     """
-    def __init__(
-        self, learning_rate=1e-1, max_step=1, name="Generalised Newton"
-    ):
+    def __init__(self, learning_rate, max_step):
         self.learning_rate = learning_rate
         self.max_step = max_step
-        self.name = name
     
-    def get_step(self, objective, x):
+    def __call__(self, objective, x):
         # Get gradients of objective function
         grad = objective.dfdx(x)
         hess = objective.d2fdx2(x)
@@ -367,6 +312,14 @@ class GeneralisedNewton(Minimiser):
         # Rotate gradient back into original coordinate system and return
         return np.matmul(evecs, step_rot), grad
 
+def generalised_newton(
+    f, x0, learning_rate=1e-1, max_step=1, name="Generalised Newton",
+    final_backstep=True, **kwargs
+):
+    get_step = GeneralisedNewtonStep(learning_rate, max_step)
+    minimise(f, x0, get_step, name=name, final_backstep=final_backstep,
+        **kwargs)
+
 def compare_function_times(input_dict_list, n_repeats=5, verbose=True):
     """
     Perform multiple repeats of an experiment, and print the mean and STD of the
@@ -378,10 +331,10 @@ def compare_function_times(input_dict_list, n_repeats=5, verbose=True):
     Example usage:
     input_dict_list = [
         {"func": GradientDescent(lr).minimise,
-            "args": (f, x0, nits, print_every, True),
+            "args": (f, x0, nits, eval_every, True),
             "name": "Gradient descent"},
         {"func": GeneralisedNewton(lr, max_step).minimise,
-            "args": (f, x0, nits, print_every),
+            "args": (f, x0, nits, eval_every),
             "name": "Generalised Newton"}
     ]
     compare_function_times(input_dict_list, n_repeats=3)
@@ -412,28 +365,28 @@ def compare_function_times(input_dict_list, n_repeats=5, verbose=True):
 
 
 if __name__ == "__main__":
-    # nits = 1000
-    # x0 = 10*np.array([1.0, 1.0, 1.0])
-    nits = 40
-    x0 = 2*np.array([1.0, 1.0, 1.0])
+    nits = 1000
+    x0 = 10*np.array([1.0, 1.0, 1.0])
+    # nits = 40
+    # x0 = 2*np.array([1.0, 1.0, 1.0])
 
-    print_every = nits // 10
-    # print_every = 1
+    eval_every = nits // 10
+    # eval_every = 1
     lr, max_step = 1e-1, 1
     f = objectives.Gaussian(scale=[1, 2, 3])
 
     # Do warmup experiment
-    GradientDescent(lr, name="Warmup").minimise(f, x0, 500, 100, verbose=True)
+    gradient_descent(f, x0, lr, name="Warmup", n_iters=500, eval_every=100,
+        verbose=True)
 
-    GradientDescent(lr, name="GD, optimal-step LS").minimise(f, x0, nits,
-        print_every, True, optimal_step=True, verbose=True,
-        # final_backstep=True)
-        final_backstep=False)
-    # GeneralisedNewton(lr, max_step).minimise(f, x0, nits, print_every, True,
-    #     name="Generalised Newton, forward-backtrack LS")
-    GeneralisedNewton(lr, max_step).minimise(f, x0, nits, print_every, True,
+    gradient_descent(f, x0, lr, name="GD, optimal-step LS", n_iters=nits,
+        eval_every=eval_every, line_search_flag=True,
+        verbose=True)
+    generalised_newton(f, x0, lr, max_step, n_iters=nits,
+        eval_every=eval_every, line_search_flag=True,
         name="Generalised Newton, optimal-step LS",
-        optimal_step=True, final_backstep=True, verbose=True)
-    # GeneralisedNewton(lr, max_step).minimise(f, x0, nits, print_every, False,
-    #     name="Generalised Newton, no LS")
+        verbose=True)
+    generalised_newton(f, x0, lr, max_step, n_iters=nits,
+        eval_every=eval_every, line_search_flag=False,
+        name="Generalised Newton, no LS", verbose=True)
     
