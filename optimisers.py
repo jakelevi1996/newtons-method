@@ -6,6 +6,14 @@ line-search. Also includes a Result class, for storing the results of each
 optimisation routine, and displaying progress and summaries of each optimisation
 routine
 
+What is happening to GN + optimal LS when x0 = [10]*3 ?? Debug required
+
+Generalised Newton now converges to 0.000e+00 from x0 = 2*np.array([1.0, 1.0,
+1.0]), which is better than before, however we still have s converging to 2
+instead of 1 (need to debug this to find out why). For x0 = 10*np.array([1.0, 1.0, 1.0]), we have only GN without LS
+succeeding; need to compare this with both types of LS in the debugger to find
+out why (especially optimal-step) LS is not succeeding in this scenario.
+
 The functions in this module should ideally fulfil the following properties:
 -   When doing line-search for generalised Newton's method, when getting close
     to the optimum, the step-size should converge to 1 (this should hopefully
@@ -60,6 +68,7 @@ TODO:
 """
 
 import numpy as np
+from numpy.linalg import norm
 from time import perf_counter
 import objectives
 import warnings
@@ -131,7 +140,7 @@ class Result():
     def load(self, filename): raise NotImplementedError
 
 
-def backtrack_condition(s, f, x, delta, f0, dfdx, alpha, tol=1e-15):
+def backtrack_condition(s, f_new, f_0, delta_dot_dfdx, alpha):
     """
     Compares the actual reduction in the objective function to that which is
     expected from a first-order Taylor expansion. Returns True if a reduction in
@@ -141,22 +150,21 @@ def backtrack_condition(s, f, x, delta, f0, dfdx, alpha, tol=1e-15):
     floating point arithmetic), => f0 == f(x + s * delta), => reduction == 0, =>
     return value is always true => infinite loop
     """
-    x_new = x + s * delta
     # If s -> 0, then x_new -> x, in which case don't continue back-tracking
     # TODO: compare np.all(x_new == x) vs np.array_equal(x, x_new) for
     # performance, and also compare to not using any checking 
-    reduction = f0 - f(x_new)
+    reduction = f_0 - f_new
     if reduction == 0:
         return False
         # if np.all(x_new == x): return False
     # Alternatively: just check if s == 0?? What to do if s == 0?
-    expected_reduction = -s * np.dot(delta, dfdx)
+    expected_reduction = -s * delta_dot_dfdx
     # return reduction + tol < (alpha * expected_reduction)
     return reduction < (alpha * expected_reduction)
 
 def line_search(
-    x, s, step, f, dfdx, alpha, beta, 
-    forward_backtrack_condition, final_backstep
+    x, s, delta, f, dfdx, alpha, beta, 
+    optimal_step, final_backstep
 ):
     """
     do line_search...
@@ -179,44 +187,76 @@ def line_search(
     choices
 
     What TODO if s == 0?
-    """
-    f_old, s_old = f(x), s
-    backtrack_params = (f, x, step, f_old, dfdx, alpha)
 
-    if backtrack_condition(s, *backtrack_params):
+    Whether to increase s at the end of forward tracking should depend on if
+    x_new == x_old (first check if f_new == f_old? Do all this in a
+    sub-function?)
+    """
+    f_0, s_old = f(x), s
+    delta_dot_dfdx = np.dot(delta, dfdx)
+    bt_params = (f_0, delta_dot_dfdx, alpha)
+    f_new, f_old = f(x + s * delta), f_0
+
+    if backtrack_condition(s, f_new, *bt_params):
         # Reduce step size until error reduction is good enough
         s *= beta
-        while backtrack_condition(s, *backtrack_params):
-            # print("\tBacktracking")
-            s *= beta
+        f_new, f_old = f(x + s * delta), f_new
+        if optimal_step:
+            # When close to the optimum with small s, it is possible that even
+            # if the backtrack condition is not met, back-tracking will still
+            # lead to an increase in the objective function, so we want to keep
+            # back-tracking until we don't need to back-track AND the objective
+            # function is increasing
+            while backtrack_condition(s, f_new, *bt_params) or f_new < f_old:
+                s *= beta
+                if s == 0:
+                    warnings.warn(
+                        "s has converged to 0; resetting t0 s_old/beta ...")
+                    return s_old * beta
+                f_new, f_old = f(x + s * delta), f_new
+
+            # if final_backstep: s /= beta
+            # if final_backstep and f_new > f_old: s *= beta
+            # TODO 2020-08-03: change and to or?
+            # if final_backstep and f_new > f_old: s /= beta
+            if final_backstep or f_new > f_old: s /= beta
+        else:
+            while backtrack_condition(s, f_new, *bt_params):
+                # print("\tBacktracking")
+                s *= beta
+                f_new = f(x + s * delta)
     else:
         # Increase step size until reduction is not good enough
-        if forward_backtrack_condition:
-            # Use same backtrack condition to track forwards
-            s /= beta
-            while not backtrack_condition(s, *backtrack_params):
-                s /= beta
-                if not np.isfinite(s):
-                    warnings.warn("s has diverged; resetting t0 s_old/beta ...")
-                    return s_old / beta
-        else:
+        if optimal_step:
             # Track forwards until objective function stops decreasing
             s /= beta
             # if not np.isfinite(s):
             #     print("Debug")
-            f_new = f(x + s * step)
-            while f_new <= f_old:
+            f_new = f(x + s * delta)
+            while f_new < f_old:
                 # print("\t", s, f_old)
                 s /= beta
                 # if np.max(np.abs(s*step) > 1e-3):
                 #     print("Big s")
                 if not np.isfinite(s):
+                    warnings.warn(
+                        "s has diverged; resetting t0 s_old/beta ...")
+                    return s_old / beta
+                f_new, f_old = f(x + s * delta), f_new
+            # print(s)
+        else:
+            # Use same backtrack condition to track forwards
+            s /= beta
+            while not backtrack_condition(s, f_new, *bt_params):
+                s /= beta
+                f_new = f(x + s * delta)
+                if not np.isfinite(s):
                     warnings.warn("s has diverged; resetting t0 s_old/beta ...")
                     return s_old / beta
-                f_new, f_old = f(x + s * step), f_new
-            # print(s)
 
-        if final_backstep: s *= beta
+        # if final_backstep: s *= beta
+        # if final_backstep and f_new > f_old:
+        if final_backstep or f_new > f_old: s *= beta
 
     return s
 
@@ -248,8 +288,8 @@ class Minimiser():
 
     def minimise(
         self, f, x0, n_iters=10000, print_every=500, line_search_flag=False,
-        s0=1, alpha=0.5, beta=0.5, final_backstep=False, name=None,
-        forward_backtrack_condition=True
+        s0=1.0, alpha=0.5, beta=0.5, final_backstep=False, name=None,
+        optimal_step=False, verbose=False
     ):
         """
         minimisation method (EG optional line-search, recording results,
@@ -268,25 +308,25 @@ class Minimiser():
         for i in range(n_iters):
             if i % print_every == 0: #TODO: make this condition time-based
                 # Evaluate the model
-                result.update(i, f(x), s, x, verbose=True)
+                result.update(i, f(x), s, x, verbose=verbose)
             
             # Update parameters
-            step, dfdx = self.get_step(f, x)
-            # Check if step = 0; if so, minimisation can't continue
-            if not np.any(step):
+            delta, dfdx = self.get_step(f, x)
+            # Check if delta = 0; if so, minimisation can't continue
+            if not np.any(delta):
                 warnings.warn(
-                    "|step| = 0 during iteration {}; exiting...".format(i))
-                result.update(i, f(x), s, x, verbose=True)
+                    "|delta| = 0 during iteration {}; exiting...".format(i))
+                result.update(i, f(x), s, x, verbose=verbose)
                 return x, result
             if line_search_flag:
-                s = line_search(x, s, step, f, dfdx, alpha, beta,
-                    forward_backtrack_condition, final_backstep)
-                x += s * step
+                s = line_search(x, s, delta, f, dfdx, alpha, beta,
+                    optimal_step, final_backstep)
+                x += s * delta
             else:
-                x += step
+                x += delta
 
         # Evaluate final performance
-        result.update(n_iters, f(x), s, x, verbose=True)
+        result.update(n_iters, f(x), s, x, verbose=verbose)
         result.display_summary(n_iters)
 
         return x, result
@@ -368,7 +408,7 @@ def compare_function_times(input_dict_list, n_repeats=5, verbose=True):
                 "STD time (s): {:.4f}"]).format(input_dict["name"], t.mean(),
                 t.std()), sep="\n", end=hline)
     return t_list
-        
+
 
 
 if __name__ == "__main__":
@@ -376,20 +416,24 @@ if __name__ == "__main__":
     # x0 = 10*np.array([1.0, 1.0, 1.0])
     nits = 40
     x0 = 2*np.array([1.0, 1.0, 1.0])
-    
+
     print_every = nits // 10
+    # print_every = 1
     lr, max_step = 1e-1, 1
     f = objectives.Gaussian(scale=[1, 2, 3])
-    # # Do warmup experiment
-    GradientDescent(lr, name="Warmup").minimise(f, x0, 500, 100)
-    GradientDescent(lr, name="SGD, optimal forward LS").minimise(f, x0, nits,
-        print_every, True, forward_backtrack_condition=False,
-        final_backstep=True)
+
+    # Do warmup experiment
+    GradientDescent(lr, name="Warmup").minimise(f, x0, 500, 100, verbose=True)
+
+    GradientDescent(lr, name="GD, optimal-step LS").minimise(f, x0, nits,
+        print_every, True, optimal_step=True, verbose=True,
+        # final_backstep=True)
+        final_backstep=False)
+    # GeneralisedNewton(lr, max_step).minimise(f, x0, nits, print_every, True,
+    #     name="Generalised Newton, forward-backtrack LS")
     GeneralisedNewton(lr, max_step).minimise(f, x0, nits, print_every, True,
-        name="Generalised Newton, forward-backtrack line-search")
-    GeneralisedNewton(lr, max_step).minimise(f, x0, nits, print_every, True,
-        name="Generalised Newton, forward-optimal line-search",
-        forward_backtrack_condition=False, final_backstep=True)
-    GeneralisedNewton(lr, max_step).minimise(f, x0, nits, print_every, False,
-        name="Generalised Newton, no line-search")
+        name="Generalised Newton, optimal-step LS",
+        optimal_step=True, final_backstep=True, verbose=True)
+    # GeneralisedNewton(lr, max_step).minimise(f, x0, nits, print_every, False,
+    #     name="Generalised Newton, no LS")
     
