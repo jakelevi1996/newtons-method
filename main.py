@@ -7,7 +7,7 @@ TODO: include function for comparing the results of different optimisers
 """
 import numpy as np
 import matplotlib.pyplot as plt
-import optimisers, objectives, plotting
+import optimisers, objectives
 
 def mesh(nx0=100, x0lim=[-3, 3], nx1=100, x1lim=[-2, 2]):
     """
@@ -30,10 +30,8 @@ def plot_func_grad_curvature(
     and smallest eignevalues of its Hessian
     """
     x_list, x0, x1 = mesh(nx0, x0lim, nx1, x1lim)
-    f_list = np.empty(x_list.shape[0])
-    g_list = np.empty(x_list.shape[0])
-    e1_list = np.empty(x_list.shape[0])
-    e2_list = np.empty(x_list.shape[0])
+    f_list, g_list = np.empty(x_list.shape[0]), np.empty(x_list.shape[0])
+    e1_list, e2_list = np.empty(x_list.shape[0]), np.empty(x_list.shape[0])
     # Calcualte objective function and its gradients and eigenvalues
     for i, x in enumerate(x_list):
         f_list[i] = objective(x)
@@ -60,13 +58,14 @@ def plot_func_grad_curvature(
     # Format, save and close
     fig.suptitle(name, fontsize=18)
     fig.tight_layout(rect=[0, 0.05, 1, 0.95])
-    plt.savefig("{}/{}".format(dir, name))
+    plt.savefig("{}/{}.{}".format(dir, name, file_ext))
     plt.close(fig)
 
 def smudge_plot(
     objective, optimiser, name="Smudge plot", n_lines=5,
-    nx0_bg=200, nx1_bg=200, nx0_sm=9, nx1_sm=9,
-    x0lims=[-3, 3], x1lims=[-2, 2], verbose=True, dir="Temp"
+    nx0_bg=200, nx1_bg=200, nx0_sm=10, nx1_sm=10,
+    x0lims=[-3, 3], x1lims=[-2, 2], verbose=True, dir="Images/Smudge plots",
+    file_ext="png"
 ):
     """
     Given a 2D objective function and an optimiser, and the details for a
@@ -77,6 +76,8 @@ def smudge_plot(
 
     TODO: use optional linesearch (maybe requires line-search being in its own
     method, or just calling minimise, but need to suppress output)
+
+    ... Or better yet, accept kwargs for the optimiser
     """
     # Calculate background values
     x_bg_list, x0_bg, x1_bg = mesh(nx0_bg, x0lims, nx1_bg, x1lims)
@@ -99,23 +100,35 @@ def smudge_plot(
         # Given the starting point x, iterate through each of the line-segments
         for i in range(n_lines):
             # Calculate smudge segment
-            smudge_points[i+1] = smudge_points[i] + optimiser.get_step(
-                objective, smudge_points[i])[0]
+            smudge_points[i+1], _ = optimiser(objective, smudge_points[i])
             # Plot smudge segment
             plt.plot(smudge_points[i:i+2, 0], smudge_points[i:i+2, 1], "k",
                 alpha=alpha_list[i])
     # Format, save and close
     plt.xlim(x0lims)
     plt.ylim(x1lims)
-    plt.savefig("{}/{}".format(dir, name))
+    plt.title(name)
+    plt.savefig("{}/{}.{}".format(dir, name, file_ext))
     plt.close()
 
+def make_smudge_plots():
+    smudge_plot(objective, lambda f, x: optimisers.gradient_descent(
+        f, x, n_iters=1, line_search_flag=False, learning_rate=2e-1
+    ), name="SGD smudge plot")
+    smudge_plot(objective, lambda f, x: optimisers.gradient_descent(
+        f, x, n_iters=1, line_search_flag=True, beta=0.99, alpha=0.2
+    # ), name="SGD+LS smudge plot", n_lines=3)
+    ), name="SGD+LS smudge plot", nx0_sm=6, nx1_sm=6, n_lines=2)
+    smudge_plot(objective, lambda f, x: optimisers.generalised_newton(
+        f, x, n_iters=1, line_search_flag=False, learning_rate=0
+    ), name="GN smudge plot")
+    smudge_plot(objective, lambda f, x: optimisers.rectified_newton(
+        f, x, n_iters=1, line_search_flag=False, learning_rate=0
+    ), name="RN smudge plot")
 
 
 if __name__ == "__main__":
     # print(mesh(nx0=3, nx1=5))
     objective = objectives.Gaussian(scale=[1, 5])
     plot_func_grad_curvature(objective)
-    smudge_plot(objective, optimisers.GradientDescent(), name="SGD smudge plot")
-    smudge_plot(objective, optimisers.GeneralisedNewton(
-        learning_rate=1e-1, max_step=0.5), name="GN smudge plot")
+    make_smudge_plots()
