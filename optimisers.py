@@ -287,7 +287,7 @@ def gradient_descent(
     **kwargs
 ):
     get_step = GradientDescentStep(learning_rate)
-    minimise(f, x0, get_step, name=name, final_backstep=final_backstep,
+    return minimise(f, x0, get_step, name=name, final_backstep=final_backstep,
         **kwargs)
 
 class GeneralisedNewtonStep:
@@ -317,7 +317,40 @@ def generalised_newton(
     final_backstep=True, **kwargs
 ):
     get_step = GeneralisedNewtonStep(learning_rate, max_step)
-    minimise(f, x0, get_step, name=name, final_backstep=final_backstep,
+    return minimise(f, x0, get_step, name=name, final_backstep=final_backstep,
+        **kwargs)
+
+class RectifiedNewtonStep:
+    """
+    Variant of Generalised Newton's method (see above), in which eigenvalues
+    which point in the wrong direction are flipped and multiplied by 1/2,
+    motivated by an inverse parabola argument
+    """
+    def __init__(self, learning_rate, max_step):
+        self.learning_rate = learning_rate
+        self.max_step = max_step
+    
+    def __call__(self, objective, x):
+        # Get gradients of objective function
+        grad = objective.dfdx(x)
+        hess = objective.d2fdx2(x)
+        # Rotate gradient into eigenbasis of Hessian 
+        evals, evecs = np.linalg.eigh(hess)
+        # evals = np.where(evals < 0, -evals/2, evals)
+        evals = np.where(evals < 0, -evals, evals*2)
+        grad_rot = np.matmul(evecs.T, grad)
+        # Take a Newton step in directions in which this step is not too big
+        step_rot = np.where((self.max_step * evals) > np.abs(grad_rot),
+            -grad_rot / evals, -self.learning_rate * grad_rot)
+        # Rotate gradient back into original coordinate system and return
+        return np.matmul(evecs, step_rot), grad
+
+def rectified_newton(
+    f, x0, learning_rate=1e-1, max_step=1, name="Rectified Newton",
+    final_backstep=True, **kwargs
+):
+    get_step = RectifiedNewtonStep(learning_rate, max_step)
+    return minimise(f, x0, get_step, name=name, final_backstep=final_backstep,
         **kwargs)
 
 def compare_function_times(input_dict_list, n_repeats=5, verbose=True):
@@ -379,14 +412,14 @@ if __name__ == "__main__":
     gradient_descent(f, x0, lr, name="Warmup", n_iters=500, eval_every=100,
         verbose=True)
 
-    gradient_descent(f, x0, lr, name="GD, optimal-step LS", n_iters=nits,
+    gradient_descent(f, x0, lr, n_iters=nits,
         eval_every=eval_every, line_search_flag=True,
         verbose=True)
     generalised_newton(f, x0, lr, max_step, n_iters=nits,
-        eval_every=eval_every, line_search_flag=True,
-        name="Generalised Newton, optimal-step LS",
-        verbose=True)
+        eval_every=eval_every, line_search_flag=True, verbose=True)
+    rectified_newton(f, x0, lr, max_step, n_iters=nits,
+        eval_every=eval_every, line_search_flag=True, verbose=True)
     generalised_newton(f, x0, lr, max_step, n_iters=nits,
-        eval_every=eval_every, line_search_flag=False,
-        name="Generalised Newton, no LS", verbose=True)
+        eval_every=eval_every, line_search_flag=False, verbose=True,
+        name="GN (no LS)")
     
