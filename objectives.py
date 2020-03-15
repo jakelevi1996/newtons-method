@@ -8,6 +8,10 @@ itself, as well as the first and second derivatives, a __call__ method which is
 a wrapper for the objective function, and optionally also first and second
 derivatives calculated using only a subset of the available variables, which are
 to be used for block optimisation routines.
+
+
+TODO: make objective functions work for evaluating multiple inputs
+simultaneously in a 2D array
 """
 import numpy as np
 import matplotlib.pyplot as plt
@@ -17,6 +21,8 @@ class ObjectiveFunction():
     """
     ObjectiveFunction: interface/parent class for all objective functions
     """
+    def __init__(self, name="Unnamed objective function"):
+        self.name = name
 
     def f(self, x):
         """
@@ -63,19 +69,16 @@ class ObjectiveFunction():
         raise NotImplementedError
 
     def __call__(self, x):
-        """
-        __call__: wrapper for self.f(x)
-        """
+        """ __call__: wrapper for self.f(x) """
         return self.f(x)
 
 class Gaussian(ObjectiveFunction):
     """
     Negative Gaussian function with zero mean and diagonal variance
     """
-    def __init__(self, scale=None, ndims=None):
-        if scale is not None:   self.scale = np.array(scale)
-        elif ndims is not None: self.scale = np.ones(ndims)
-        else: raise ValueError("Must specify scale or ndims")
+    def __init__(self, scale, name="Gaussian objective funtcion"):
+        self.scale = np.array(scale)
+        self.name = name
 
     def f(self, x):
         return 1.0 - np.exp(-np.dot(self.scale * x, x))
@@ -89,18 +92,70 @@ class Gaussian(ObjectiveFunction):
         # if f is None: f = self.f(x)
         if inds is not None: raise NotImplementedError
         scaled_x = self.scale * x
-        return -2.0 * np.exp(-np.dot(self.scale * x, x)) * (
+        return -2.0 * np.exp(-np.dot(scaled_x, x)) * (
             2.0*np.outer(scaled_x, scaled_x) - self.scale*np.identity(x.size)
         )
+
+class SumOfGaussians(ObjectiveFunction):
+    """
+    Negative Gaussian function with zero mean and diagonal variance
+    """
+    def __init__(self, name="Sum of Gaussians objective function"):
+        self.name = name
+
+    def f(self, x):
+        x1, x2 = x + 1, x - 1
+        return np.exp(-np.dot(x2, x2)) - np.exp(-np.dot(x1, x1))
+
+    def dfdx(self, x, f=None, inds=None):
+        # if f is None: f = self.f(x)
+        if inds is not None: raise NotImplementedError
+        x1, x2 = x + 1, x - 1
+        x1_term = x1 * np.exp(-np.dot(x1, x1))
+        x2_term = x2 * np.exp(-np.dot(x2, x2))
+        return 2.0 * (x1_term - x2_term)
+
+    def d2fdx2(self, x, f=None, inds=None):
+        # if f is None: f = self.f(x)
+        if inds is not None: raise NotImplementedError
+        x1, x2 = x + 1, x - 1
+        x1_term = np.exp(-np.dot(x1, x1)) * (
+            2.0 * np.outer(x1, x1) - np.identity(x.size))
+        x2_term = np.exp(-np.dot(x2, x2)) * (
+            2.0 * np.outer(x2, x2) - np.identity(x.size))
+        return 2.0 * (x2_term - x1_term)
         
 
 class Cauchy(ObjectiveFunction):
-    def __init__(self):
-        raise NotImplementedError
+    """
+    Cauchy function with centre at zero and diagonal scaling
+    """
+    def __init__(self, scale, name="Cauchy objective function"):
+        self.scale = np.array(scale)
+        self.name = name
+
+    def f(self, x):
+        return 1.0 - 1.0 / (1.0 + np.dot(self.scale * x, x))
+
+    def dfdx(self, x, f=None, inds=None):
+        # if f is None: f = self.f(x)
+        if inds is not None: raise NotImplementedError
+        y = 1.0 / (1.0 + np.dot(self.scale * x, x))
+        return 2.0 * self.scale * x * y * y
+
+    def d2fdx2(self, x, f=None, inds=None):
+        # if f is None: f = self.f(x)
+        if inds is not None: raise NotImplementedError
+        scaled_x = self.scale * x
+        y = 1.0 / (1.0 + np.dot(self.scale * x, x))
+        diag = self.scale * np.identity(x.size)
+        return -2.0 * y * y * (
+            4.0*np.outer(scaled_x, scaled_x) * y - diag
+        )
 
 
 if __name__ == "__main__":
-    og = Gaussian(ndims=2)
+    og = Gaussian([1, 1])
     x = np.ones(2)
     print(
         x, x.dot(x), np.exp(-x.dot(x)), og(x), og.dfdx(x), og.d2fdx2(x),
@@ -111,7 +166,7 @@ if __name__ == "__main__":
 
     n = 200
     x = np.ones(n)
-    og = Gaussian(ndims=n)
+    og = Gaussian(np.ones(n))
     for _ in range(100):
         og.f(x)
     t0 = perf_counter()
