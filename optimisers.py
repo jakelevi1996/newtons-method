@@ -86,7 +86,7 @@ class Result():
     optional, and the column width and format spec for each column is
     configurable. Also implement saving and loading of results
     """
-    def __init__(self, name, verbose=True):
+    def __init__(self, name=None, verbose=True):
         """
         Store the name of the experiment (which is useful later when displaying
         results), display table headers, initialise lists for objective function
@@ -97,11 +97,11 @@ class Result():
         if verbose: self.display_headers()
         self.verbose = verbose
 
-        self.objective = []
-        self.times = []
-        self.iters = []
-        self.step_size = []
-        self.x_norm = []
+        self.objective  = []
+        self.times      = []
+        self.iters      = []
+        self.step_size  = []
+        self.x_norm     = []
         self.start_time = perf_counter()
     
     def update(self, i, f, s, x):
@@ -223,10 +223,10 @@ def line_search(x, s, delta, f, dfdx, alpha, beta, final_backstep):
 
     return s
 
-
 def minimise(
-    f, x0, get_step, n_iters=10000, eval_every=500, line_search_flag=False,
-    s0=1.0, alpha=0.5, beta=0.5, final_backstep=False, name=None, verbose=False
+    f, x0, get_step, n_iters=10000, t_lim=1, f_lim=-np.inf, eval_every=1,
+    line_search_flag=False, s0=1.0, alpha=0.5, beta=0.5, final_backstep=False,
+    name=None, verbose=False
 ):
     """
     ...
@@ -242,31 +242,35 @@ def minimise(
     displaying a final summary), and calls a get_step method, which should
     be implemented by each specific child class.
     """
-    # Set initial parameters and start time
-    x, s = x0.copy(), s0
+    # Set initial parameters, step size and iteration counter
+    x, s, i = x0.copy(), s0, 0
     # Initialise result object, including start time of iteration
-    result = Result(name, verbose=verbose)
-    for i in range(n_iters):
+    result = Result(name, verbose)
+    while True:
+        # Get gradient and initial step
+        delta, dfdx = get_step(f, x)
+        
+        # Check if delta is zero; if so, minimisation can't continue, so exit
+        if not np.any(delta): break
+
+        # Evaluate the model
         if i % eval_every == 0: #TODO: make this condition time-based
-            # Evaluate the model
             result.update(i, f(x), s, x)
         
         # Update parameters
-        delta, dfdx = get_step(f, x)
-        # Check if delta = 0; if so, minimisation can't continue
-        if not np.any(delta):
-            print("|delta| = 0 during iteration {}; exiting...".format(i))
-            n_iters = i
-            break
         if line_search_flag:
             s = line_search(x, s, delta, f, dfdx, alpha, beta, final_backstep)
             x += s * delta
         else:
             x += delta
+        
+        i += 1
+        if any([i >= n_iters, result.objective[-1] <= f_lim,
+            perf_counter() - result.start_time >= t_lim]): break
 
     # Evaluate final performance
-    result.update(n_iters, f(x), s, x)
-    if verbose: result.display_summary(n_iters)
+    result.update(i, f(x), s, x)
+    if verbose: result.display_summary(i)
 
     return x, result
 
@@ -278,6 +282,10 @@ class GradientDescentStep:
         """
         Method to get the descent step during each iteration of gradient-descent
         minimisation
+
+        TODO: make this a regular function (not a class method), and within the
+        gradient_desent function, set the get_step function as a lambda
+        expression which calls this function with specified parameters
         """
         dfdx = objective.dfdx(x)
         return -self.learning_rate * dfdx, dfdx
@@ -323,8 +331,20 @@ def generalised_newton(
 class RectifiedNewtonStep:
     """
     Variant of Generalised Newton's method (see above), in which eigenvalues
-    which point in the wrong direction are flipped and multiplied by 1/2,
-    motivated by an inverse parabola argument
+    which point in the wrong direction are flipped and multiplied by 2,
+    motivated by an inverse parabola argument.
+
+    In a convex region for minimisation, all eigenvalues are positive, and we
+    take the step -(hess^-1) * grad. In a non-convex region, we first scale any
+    negative eigenvalues by -2. In any directions in which the step-size is too
+    big (large gradient and small eigenvalue), we ignore the Newton step and
+    simply follow the gradient.
+
+    I don't know why, but a prettier smudge plot for the asymetric Gaussian
+    objective function can be made with the clipping function evals =
+    np.where(evals < 0, -evals, evals*2). Faster convergence for asymetric
+    Gaussian objective function starting at [10, 10, 10] can be achieved with
+    the clipping function np.where(evals < 0, -evals/2, evals)
     """
     def __init__(self, learning_rate, max_step):
         self.learning_rate = learning_rate
@@ -334,10 +354,9 @@ class RectifiedNewtonStep:
         # Get gradients of objective function
         grad = objective.dfdx(x)
         hess = objective.d2fdx2(x)
-        # Rotate gradient into eigenbasis of Hessian 
+        # Rotate gradient into eigenbasis of rectified Hessian 
         evals, evecs = np.linalg.eigh(hess)
-        # evals = np.where(evals < 0, -evals/2, evals)
-        evals = np.where(evals < 0, -evals, evals*2)
+        evals = np.where(evals < 0, -evals*2, evals)
         grad_rot = np.matmul(evecs.T, grad)
         # Take a Newton step in directions in which this step is not too big
         step_rot = np.where((self.max_step * evals) > np.abs(grad_rot),
@@ -401,12 +420,15 @@ if __name__ == "__main__":
     nits = 1000
     x0 = 10*np.array([1.0, 1.0, 1.0])
     # nits = 40
+    # nits = 100
     # x0 = 2*np.array([1.0, 1.0, 1.0])
 
     eval_every = nits // 10
     # eval_every = 1
     lr, max_step = 1e-1, 1
-    f = objectives.Gaussian(scale=[1, 2, 3])
+    f = objectives.Gaussian([1, 2, 3])
+    # f = objectives.Cauchy([1, 2, 3])
+    # f = objectives.Cauchy([1, 1, 1])
 
     # Do warmup experiment
     gradient_descent(f, x0, lr, name="Warmup", n_iters=500, eval_every=100,
