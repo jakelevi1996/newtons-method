@@ -78,6 +78,8 @@ def smudge_plot(
     method, or just calling minimise, but need to suppress output)
 
     ... Or better yet, accept kwargs for the optimiser
+
+    TODO: augment name with names of optimiser and objective function
     """
     # Calculate background values
     x_bg_list, x0_bg, x1_bg = mesh(nx0_bg, x0lims, nx1_bg, x1lims)
@@ -111,7 +113,7 @@ def smudge_plot(
     plt.savefig("{}/{}.{}".format(dir, name, file_ext))
     plt.close()
 
-def make_smudge_plots():
+def make_smudge_plots(objective):
     smudge_plot(objective, lambda f, x: optimisers.gradient_descent(
         f, x, n_iters=1, line_search_flag=False, learning_rate=2e-1
     ), name="SGD smudge plot")
@@ -126,9 +128,69 @@ def make_smudge_plots():
         f, x, n_iters=1, line_search_flag=False, learning_rate=0
     ), name="RN smudge plot")
 
+def plot_dimensional_efficiency(
+    optimiser_list, ObjectiveClass, ndims_list, n_repeats=5, distance_ratio=1,
+    convergence_value=1e-10, seed=0, name="Convergence time vs dimension",
+    dir="Images/Dimensional efficiency", file_ext="png", alpha=0.5
+):
+    # Set random seed
+    np.random.seed(seed)
+    # Initialise figure, and lists for colours, handles and labels (for legend)
+    plt.figure(figsize=[8, 6])
+    colours = plt.get_cmap("hsv")(
+        np.linspace(0, 1, len(optimiser_list), endpoint=False))
+    handles, labels = [], []
+    # Iterate through dimensions, repeats, and optimisers
+    for i_d, ndims in enumerate(ndims_list):
+        for i_r in range(n_repeats):
+            for i_o, optimiser in enumerate(optimiser_list):
+                print("Testing dimension {}/{}, repeat {}/{}, "
+                    "optimiser {}/{}...".format(i_d + 1, len(ndims_list), i_r + 1,
+                        n_repeats, i_o + 1, len(optimiser_list)))
+                # Initialise random scale and starting point
+                scale = np.abs(np.random.normal(size=ndims))
+                scale /= np.linalg.norm(scale)
+                x0 = np.random.normal(size=ndims)
+                x0 *= distance_ratio / np.linalg.norm(x0)
+                # Perform minimisation
+                _, result = optimiser(ObjectiveClass(scale), x0,
+                    convergence_value)
+                # If optimisation succeeded, then add result to plot
+                if result.objective[-1] <= convergence_value:
+                    lines = plt.loglog(ndims, result.times[-1],
+                        color=colours[i_o], marker="o", alpha=alpha)
+                # Check if the first dimension and repeat of each optimiser
+                if i_d == 0 and i_r == 0:
+                    # Make a record of the legend details
+                    handles.append(lines[0])
+                    labels.append(result.name)
+
+    # Format, save and close
+    plt.grid(True)
+    plt.title(name)
+    plt.legend(handles, labels)
+    plt.xlabel("Dimension")
+    plt.ylabel("Time until convergence (s)")
+    plt.savefig("{}/{}.{}".format(dir, name, file_ext))
+    plt.close()
+
+def make_dimensional_efficiency_plots():
+    n_dims_list = np.unique(np.logspace(0, 3, 10, dtype=np.int))
+    plot_dimensional_efficiency([
+        lambda f, x, f_lim: optimisers.gradient_descent(f, x, f_lim=f_lim,
+            line_search_flag=True, n_iters=np.inf, t_lim=np.inf),
+        lambda f, x, f_lim: optimisers.generalised_newton(f, x, f_lim=f_lim,
+            line_search_flag=True, n_iters=np.inf, t_lim=np.inf),
+        lambda f, x, f_lim: optimisers.rectified_newton(f, x, f_lim=f_lim,
+            line_search_flag=True, n_iters=np.inf, t_lim=np.inf),
+    ], objectives.Gaussian, n_dims_list, distance_ratio=3)
+
 
 if __name__ == "__main__":
     # print(mesh(nx0=3, nx1=5))
-    objective = objectives.Gaussian(scale=[1, 5])
-    plot_func_grad_curvature(objective)
-    make_smudge_plots()
+    # objective = objectives.Gaussian(scale=[1, 5])
+    # objective = objectives.Cauchy(scale=[1, 5])
+    # objective = objectives.SumOfGaussians()
+    # plot_func_grad_curvature(objective)
+    # make_smudge_plots(objective)
+    make_dimensional_efficiency_plots()
