@@ -176,14 +176,18 @@ def plot_dimensional_efficiency(
 
 def make_dimensional_efficiency_plots():
     n_dims_list = np.unique(np.logspace(0, 3, 10, dtype=np.int))
-    plot_dimensional_efficiency([
+    optimiser_list = [
         lambda f, x, f_lim: optimisers.gradient_descent(f, x, f_lim=f_lim,
             line_search_flag=True, n_iters=np.inf, t_lim=np.inf),
         lambda f, x, f_lim: optimisers.generalised_newton(f, x, f_lim=f_lim,
             line_search_flag=True, n_iters=np.inf, t_lim=np.inf),
+        lambda f, x, f_lim: optimisers.block_generalised_newton(f, x,
+            f_lim=f_lim, line_search_flag=True, n_iters=np.inf, t_lim=np.inf),
         lambda f, x, f_lim: optimisers.rectified_newton(f, x, f_lim=f_lim,
             line_search_flag=True, n_iters=np.inf, t_lim=np.inf),
-    ], objectives.Gaussian, n_dims_list, distance_ratio=3)
+    ]
+    plot_dimensional_efficiency(optimiser_list, objectives.Gaussian,
+        n_dims_list, distance_ratio=3)
 
 
 if __name__ == "__main__":

@@ -85,16 +85,22 @@ class Gaussian(ObjectiveFunction):
 
     def dfdx(self, x, f=None, inds=None):
         # if f is None: f = self.f(x)
-        if inds is not None: raise NotImplementedError
-        return 2.0 * self.scale * x * np.exp(-np.dot(self.scale * x, x))
+        scaled_x = self.scale * x
+        if inds is not None:
+            return 2.0 * scaled_x[inds] * np.exp(-np.dot(scaled_x, x))
+        return 2.0 * scaled_x * np.exp(-np.dot(scaled_x, x))
 
     def d2fdx2(self, x, f=None, inds=None):
         # if f is None: f = self.f(x)
-        if inds is not None: raise NotImplementedError
         scaled_x = self.scale * x
-        return -2.0 * np.exp(-np.dot(scaled_x, x)) * (
-            2.0*np.outer(scaled_x, scaled_x) - self.scale*np.identity(x.size)
-        )
+        y = -2.0 * np.exp(-np.dot(scaled_x, x))
+        if inds is not None:
+            outer_product_term = 2.0 * np.outer(scaled_x[inds], scaled_x[inds])
+            diag_term = np.diag(self.scale[inds])
+        else:
+            outer_product_term = 2.0 * np.outer(scaled_x, scaled_x)
+            diag_term = np.diag(self.scale)
+        return y * (outer_product_term - diag_term)
 
 class SumOfGaussians(ObjectiveFunction):
     """

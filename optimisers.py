@@ -246,7 +246,10 @@ def minimise(
     x, s, i = x0.copy(), s0, 0
     # Initialise result object, including start time of iteration
     result = Result(name, verbose)
+
     while True:
+    # for i in range(n_iters):
+
         # Get gradient and initial step
         delta, dfdx = get_step(f, x)
         
@@ -264,6 +267,7 @@ def minimise(
         else:
             x += delta
         
+        # Increment loop counter and check loop condition
         i += 1
         if any([i >= n_iters, result.objective[-1] <= f_lim,
             perf_counter() - result.start_time >= t_lim]): break
@@ -327,6 +331,43 @@ def generalised_newton(
     get_step = GeneralisedNewtonStep(learning_rate, max_step)
     return minimise(f, x0, get_step, name=name, final_backstep=final_backstep,
         **kwargs)
+
+def get_block_generalised_newton_step(
+    objective, x, block_size, learning_rate, max_step
+):
+    """
+    TODO: better code reuse (instead of copied + pasted code)
+    also update comments
+    """
+    inds = np.random.choice(x.size, min(block_size, x.size), replace=False)
+    # Get gradients of objective function
+    
+    # TODO: should full gradient be calculated? Final shape needs to be same as
+    # x for grad and delta, but could get a boolean array for the inds, and
+    # address the size in the return statement using np.where(inds, grad, 0)
+    # (and similarly for delta)
+    grad = objective.dfdx(x)
+    hess = objective.d2fdx2(x, inds=inds)
+    # Rotate gradient into eigenbasis of Hessian
+    evals, evecs = np.linalg.eigh(hess)
+    grad_rot = np.matmul(evecs.T, grad[inds])
+    # Take a Newton step in directions in which this step is not too big
+    step_rot = np.where((max_step * np.abs(evals)) > np.abs(grad_rot),
+        -grad_rot / np.abs(evals), -learning_rate * grad_rot)
+    # Rotate gradient back into original coordinate system and return
+    delta = np.zeros(x.shape)
+    delta[inds] = np.matmul(evecs, step_rot)
+    return delta, grad
+
+def block_generalised_newton(
+    f, x0, learning_rate=1e-1, max_step=1, name="Block generalised Newton",
+    final_backstep=True, block_size=10, **kwargs
+):
+    get_step = lambda f, x: get_block_generalised_newton_step(
+        f, x, block_size, learning_rate, max_step)
+    return minimise(f, x0, get_step, name=name, final_backstep=final_backstep,
+        **kwargs)
+
 
 class RectifiedNewtonStep:
     """
@@ -417,7 +458,8 @@ def compare_function_times(input_dict_list, n_repeats=5, verbose=True):
 
 
 if __name__ == "__main__":
-    nits = 1000
+    np.random.seed(0)
+    nits = 2000
     x0 = 10*np.array([1.0, 1.0, 1.0])
     # nits = 40
     # nits = 100
@@ -438,6 +480,8 @@ if __name__ == "__main__":
         eval_every=eval_every, line_search_flag=True,
         verbose=True)
     generalised_newton(f, x0, lr, max_step, n_iters=nits,
+        eval_every=eval_every, line_search_flag=True, verbose=True)
+    block_generalised_newton(f, x0, lr, max_step, n_iters=nits, block_size=2,
         eval_every=eval_every, line_search_flag=True, verbose=True)
     rectified_newton(f, x0, lr, max_step, n_iters=nits,
         eval_every=eval_every, line_search_flag=True, verbose=True)
