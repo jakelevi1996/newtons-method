@@ -439,49 +439,6 @@ def rectified_newton(
     return minimise(f, x0, get_step, name=name, final_backstep=final_backstep,
         **kwargs)
 
-def compare_function_times(input_dict_list, n_repeats=5, verbose=True):
-    """
-    Perform multiple repeats of an experiment, and print the mean and STD of the
-    results. input_dict_list should be a list of dictionaries, one for each
-    function to be tested. Each dictionary should have func, args and name keys,
-    for the function which is to be called, a tuple of args with which it is to
-    be called, and the name which is to be printed along with the results.
-
-    Example usage:
-    input_dict_list = [
-        {"func": GradientDescent(lr).minimise,
-            "args": (f, x0, nits, eval_every, True),
-            "name": "Gradient descent"},
-        {"func": GeneralisedNewton(lr, max_step).minimise,
-            "args": (f, x0, nits, eval_every),
-            "name": "Generalised Newton"}
-    ]
-    compare_function_times(input_dict_list, n_repeats=3)
-    TODO: delete this function (replace with results comparison)
-    """
-    t_list = np.empty([len(input_dict_list), n_repeats])
-    # Iterate through each input dictionary
-    for i, input_dict in enumerate(input_dict_list):
-        # Get function and input
-        func, args = input_dict["func"], input_dict["args"]
-        # Iterate through each repeat
-        for j in range(n_repeats):
-            # Perform experiment
-            t0 = perf_counter()
-            func(*args)
-            t1 = perf_counter()
-            # Record time taken
-            t_list[i, j] = t1 - t0
-    if verbose:
-        hline = "\n" + "-" * 50 + "\n"
-        print("{0}Funcion time comparison results{0}".format(hline), end="")
-        # Print results for each input dictionary
-        for input_dict, t in zip(input_dict_list, t_list):
-            print("\n".join(["Function name: {:15}", "Mean time (s): {:.4f}",
-                "STD time (s): {:.4f}"]).format(input_dict["name"], t.mean(),
-                t.std()), sep="\n", end=hline)
-    return t_list
-
 def warmup():
     """ Do warmup experiment """
     np.random.seed(0)
