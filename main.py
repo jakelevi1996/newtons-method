@@ -7,6 +7,7 @@ TODO: include function for comparing the results of different optimisers
 """
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
 import optimisers, objectives
 
 def mesh(nx0=100, x0lim=[-3, 3], nx1=100, x1lim=[-2, 2]):
@@ -133,62 +134,100 @@ def plot_dimensional_efficiency(
     convergence_value=1e-10, seed=0, name="Convergence time vs dimension",
     dir="Images/Dimensional efficiency", file_ext="png", alpha=0.5
 ):
+    # TODO: make list of final times for each dimension, repeat and optimiser.
+    # If optimisation fails, record nan. Find mean across repeats of non-nan
+    # results, and plot non-nan mean curves on the scatter plot
+
     # Set random seed
     np.random.seed(seed)
-    # Initialise figure, and lists for colours, handles and labels (for legend)
+    # Initialise figure, and lists for colours and legend handles
     plt.figure(figsize=[8, 6])
     colours = plt.get_cmap("hsv")(
         np.linspace(0, 1, len(optimiser_list), endpoint=False))
-    handles, labels = [], []
-    # Iterate through dimensions, repeats, and optimisers
+    handles = []
+    # Iterate through dimensions and repeats
     for i_d, ndims in enumerate(ndims_list):
         for i_r in range(n_repeats):
+            # Initialise random scale and starting point
+            scale = np.abs(np.random.normal(size=ndims))
+            scale /= np.linalg.norm(scale)
+            x0 = np.random.normal(size=ndims)
+            x0 *= distance_ratio / np.linalg.norm(x0)
+            # Iterate through optimisers
             for i_o, optimiser in enumerate(optimiser_list):
                 print("Testing dimension {}/{}, repeat {}/{}, "
-                    "optimiser {}/{}...".format(i_d + 1, len(ndims_list), i_r + 1,
-                        n_repeats, i_o + 1, len(optimiser_list)))
-                # Initialise random scale and starting point
-                scale = np.abs(np.random.normal(size=ndims))
-                scale /= np.linalg.norm(scale)
-                x0 = np.random.normal(size=ndims)
-                x0 *= distance_ratio / np.linalg.norm(x0)
+                    "optimiser {}/{}...".format(i_d + 1, len(ndims_list),
+                        i_r + 1, n_repeats, i_o + 1, len(optimiser_list)))
+
                 # Perform minimisation
                 _, result = optimiser(ObjectiveClass(scale), x0,
                     convergence_value)
+
                 # If optimisation succeeded, then add result to plot
                 if result.objective[-1] <= convergence_value:
                     lines = plt.loglog(ndims, result.times[-1],
                         color=colours[i_o], marker="o", alpha=alpha)
+                else: print("Optimisation failed for {}".format(result.name))
+
                 # Check if the first dimension and repeat of each optimiser
                 if i_d == 0 and i_r == 0:
                     # Make a record of the legend details
-                    handles.append(lines[0])
-                    labels.append(result.name)
+                    handles.append(Line2D([], [], color=colours[i_o],
+                        marker="o", alpha=alpha, label=result.name))
 
     # Format, save and close
     plt.grid(True)
     plt.title(name)
-    plt.legend(handles, labels)
+    plt.legend(handles=handles)
     plt.xlabel("Dimension")
     plt.ylabel("Time until convergence (s)")
     plt.savefig("{}/{}.{}".format(dir, name, file_ext))
     plt.close()
 
-def make_dimensional_efficiency_plots():
+def compare_optimisers_dimensional_efficiency():
     n_dims_list = np.unique(np.logspace(0, 3, 10, dtype=np.int))
     optimiser_list = [
         lambda f, x, f_lim: optimisers.gradient_descent(f, x, f_lim=f_lim,
-            line_search_flag=True, n_iters=np.inf, t_lim=np.inf),
+            line_search_flag=True, n_iters=np.inf, t_lim=5),
         lambda f, x, f_lim: optimisers.generalised_newton(f, x, f_lim=f_lim,
-            line_search_flag=True, n_iters=np.inf, t_lim=np.inf),
+            line_search_flag=True, n_iters=np.inf, t_lim=5),
         lambda f, x, f_lim: optimisers.block_generalised_newton(f, x,
-            f_lim=f_lim, line_search_flag=True, n_iters=np.inf, t_lim=np.inf),
+            f_lim=f_lim, line_search_flag=True, n_iters=np.inf, t_lim=5),
+        lambda f, x, f_lim: optimisers.parallel_block_generalised_newton(f, x,
+            f_lim=f_lim, line_search_flag=True, n_iters=np.inf, t_lim=5,
+            block_size=3),
         lambda f, x, f_lim: optimisers.rectified_newton(f, x, f_lim=f_lim,
-            line_search_flag=True, n_iters=np.inf, t_lim=np.inf),
+            line_search_flag=True, n_iters=np.inf, t_lim=5),
     ]
     plot_dimensional_efficiency(optimiser_list, objectives.Gaussian,
-        n_dims_list, distance_ratio=3)
+        n_dims_list, distance_ratio=3,
+        name="Dimensional efficiency of different optimisers")
 
+def compare_block_sizes_dimensional_efficiency_sequential():
+    n_dims_list = np.unique(np.logspace(0, 3, 10, dtype=np.int))
+    block_sizes = np.unique(np.logspace(0, 2, 5, dtype=np.int))
+    optimiser_list = [(
+        lambda f, x, f_lim, b=b: optimisers.block_generalised_newton(
+            f, x, f_lim=f_lim, line_search_flag=True, n_iters=np.inf, t_lim=5,
+            block_size=b, name="Block size = {}".format(b))
+    ) for b in block_sizes]
+    plot_dimensional_efficiency(optimiser_list, objectives.Gaussian,
+        n_dims_list, distance_ratio=3,
+        name="Dimensional efficiency of sequential block sizes")
+
+def compare_block_sizes_dimensional_efficiency_parallel():
+    n_dims_list = np.unique(np.logspace(0, 3, 10, dtype=np.int))
+    block_sizes = np.unique(np.logspace(0, 2, 5, dtype=np.int))
+    optimiser_list = [(
+        lambda f, x, f_lim, b=b: optimisers.parallel_block_generalised_newton(
+            f, x, f_lim=f_lim, line_search_flag=True, n_iters=np.inf, t_lim=5,
+            block_size=b, name="Block size = {}".format(b))
+    ) for b in block_sizes]
+    plot_dimensional_efficiency(optimiser_list, objectives.Gaussian,
+        n_dims_list, distance_ratio=3,
+        name="Dimensional efficiency of parallel block sizes")
+
+def compare_results_curves(results_list, ): raise NotImplementedError
 
 if __name__ == "__main__":
     # print(mesh(nx0=3, nx1=5))
@@ -197,4 +236,6 @@ if __name__ == "__main__":
     # objective = objectives.SumOfGaussians()
     # plot_func_grad_curvature(objective)
     # make_smudge_plots(objective)
-    make_dimensional_efficiency_plots()
+    compare_optimisers_dimensional_efficiency()
+    # compare_block_sizes_dimensional_efficiency_sequential()
+    # compare_block_sizes_dimensional_efficiency_parallel()

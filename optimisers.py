@@ -33,6 +33,7 @@ The functions in this module should ideally fulfil the following properties:
 -   Should gradient-descent with line-search be able to succeed without the
     step-size diverging, when starting far away from the optimum?
 
+TODO: Constant index default argument to get-step functions to allow
 
 TODO: Question: for Generalised Newton, why is forward-optimal line-search
 > 4x slower than forward-backtrack line-search? Is it due to behaviour, EG the
@@ -253,8 +254,8 @@ def minimise(
         # Get gradient and initial step
         delta, dfdx = get_step(f, x)
         
-        # Check if delta is zero; if so, minimisation can't continue, so exit
-        if not np.any(delta): break
+        # # Check if delta is zero; if so, minimisation can't continue, so exit
+        # if not np.any(delta): break
 
         # Evaluate the model
         if i % eval_every == 0: #TODO: make this condition time-based
@@ -278,57 +279,46 @@ def minimise(
 
     return x, result
 
-class GradientDescentStep:
-    def __init__(self, learning_rate):
-        self.learning_rate = learning_rate
-    
-    def __call__(self, objective, x):
+def get_gradient_descent_step(objective, x, learning_rate):
         """
         Method to get the descent step during each iteration of gradient-descent
         minimisation
-
-        TODO: make this a regular function (not a class method), and within the
-        gradient_desent function, set the get_step function as a lambda
-        expression which calls this function with specified parameters
         """
         dfdx = objective.dfdx(x)
-        return -self.learning_rate * dfdx, dfdx
+        return -learning_rate * dfdx, dfdx
 
 def gradient_descent(
     f, x0, learning_rate=1e-1, name="Gradient descent", final_backstep=False,
     **kwargs
 ):
-    get_step = GradientDescentStep(learning_rate)
+    get_step = lambda f, x: get_gradient_descent_step(f, x, learning_rate)
     return minimise(f, x0, get_step, name=name, final_backstep=final_backstep,
         **kwargs)
 
-class GeneralisedNewtonStep:
+def get_generalised_newton_step(objective, x, learning_rate, max_step):
     """
-    Class for minimisation using Newton's method, generalised to non-convex
+    Function for minimisation using Newton's method, generalised to non-convex
     objective functions using an eigendecomposition of the Hessian matrix
     """
-    def __init__(self, learning_rate, max_step):
-        self.learning_rate = learning_rate
-        self.max_step = max_step
-    
-    def __call__(self, objective, x):
-        # Get gradients of objective function
-        grad = objective.dfdx(x)
-        hess = objective.d2fdx2(x)
-        # Rotate gradient into eigenbasis of Hessian
-        evals, evecs = np.linalg.eigh(hess)
-        grad_rot = np.matmul(evecs.T, grad)
-        # Take a Newton step in directions in which this step is not too big
-        step_rot = np.where((self.max_step * np.abs(evals)) > np.abs(grad_rot),
-            -grad_rot / np.abs(evals), -self.learning_rate * grad_rot)
-        # Rotate gradient back into original coordinate system and return
-        return np.matmul(evecs, step_rot), grad
+    # Get gradients of objective function
+    grad = objective.dfdx(x)
+    hess = objective.d2fdx2(x)
+    # Rotate gradient into eigenbasis of Hessian
+    evals, evecs = np.linalg.eigh(hess)
+    grad_rot = np.matmul(evecs.T, grad)
+    # Take a Newton step in directions in which this step is not too big
+    step_rot = np.where((max_step * np.abs(evals)) > np.abs(grad_rot),
+        -grad_rot / np.abs(evals), -learning_rate * grad_rot)
+    # Rotate gradient back into original coordinate system and return
+    return np.matmul(evecs, step_rot), grad
+
 
 def generalised_newton(
     f, x0, learning_rate=1e-1, max_step=1, name="Generalised Newton",
     final_backstep=True, **kwargs
 ):
-    get_step = GeneralisedNewtonStep(learning_rate, max_step)
+    get_step = lambda f, x: get_generalised_newton_step(
+        f, x, learning_rate, max_step)
     return minimise(f, x0, get_step, name=name, final_backstep=final_backstep,
         **kwargs)
 
@@ -338,15 +328,12 @@ def get_block_generalised_newton_step(
     """
     TODO: better code reuse (instead of copied + pasted code)
     also update comments
+    also *** simultaneous blocks
     """
-    inds = np.random.choice(x.size, min(block_size, x.size), replace=False)
+    inds = np.random.choice(x.size, block_size, replace=False)
     # Get gradients of objective function
-    
-    # TODO: should full gradient be calculated? Final shape needs to be same as
-    # x for grad and delta, but could get a boolean array for the inds, and
-    # address the size in the return statement using np.where(inds, grad, 0)
-    # (and similarly for delta)
-    grad = objective.dfdx(x)
+    grad = np.empty(x.size)
+    grad[inds] = objective.dfdx(x, inds=inds)
     hess = objective.d2fdx2(x, inds=inds)
     # Rotate gradient into eigenbasis of Hessian
     evals, evecs = np.linalg.eigh(hess)
@@ -360,11 +347,50 @@ def get_block_generalised_newton_step(
     return delta, grad
 
 def block_generalised_newton(
-    f, x0, learning_rate=1e-1, max_step=1, name="Block generalised Newton",
-    final_backstep=True, block_size=10, **kwargs
+    f, x0, learning_rate=1e-1, max_step=1, final_backstep=True, block_size=10,
+    name="Sequential block generalised Newton", **kwargs
 ):
-    get_step = lambda f, x: get_block_generalised_newton_step(
-        f, x, block_size, learning_rate, max_step)
+    if block_size < x0.size:
+        get_step = lambda f, x: get_block_generalised_newton_step(
+            f, x, block_size, learning_rate, max_step)
+    else:
+        get_step = lambda f, x: get_generalised_newton_step(
+            f, x, learning_rate, max_step)
+    return minimise(f, x0, get_step, name=name, final_backstep=final_backstep,
+        **kwargs)
+
+def get_parallel_block_generalised_newton_step(
+    objective, x, n_blocks, learning_rate, max_step
+):
+    """
+    ...
+    """
+    inds_list = np.array_split(np.random.permutation(x.size), n_blocks)
+    delta = np.empty(x.shape)
+    grad = objective.dfdx(x)
+    for inds in inds_list:
+        hess = objective.d2fdx2(x, inds=inds)
+        # Rotate gradient into eigenbasis of Hessian
+        evals, evecs = np.linalg.eigh(hess)
+        grad_rot = np.matmul(evecs.T, grad[inds])
+        # Take a Newton step in directions in which this step is not too big
+        step_rot = np.where((max_step * np.abs(evals)) > np.abs(grad_rot),
+            -grad_rot / np.abs(evals), -learning_rate * grad_rot)
+        # Rotate gradient back into original coordinate system and return
+        delta[inds] = np.matmul(evecs, step_rot)
+    return delta, grad
+
+def parallel_block_generalised_newton(
+    f, x0, learning_rate=1e-1, max_step=1, final_backstep=True, block_size=10,
+    name="Parallel block generalised Newton", **kwargs
+):
+    if block_size < x0.size:
+        n_blocks = np.ceil(x0.size / block_size)
+        get_step = lambda f, x: get_parallel_block_generalised_newton_step(
+            f, x, n_blocks, learning_rate, max_step)
+    else:
+        get_step = lambda f, x: get_generalised_newton_step(
+            f, x, learning_rate, max_step)
     return minimise(f, x0, get_step, name=name, final_backstep=final_backstep,
         **kwargs)
 
@@ -431,6 +457,7 @@ def compare_function_times(input_dict_list, n_repeats=5, verbose=True):
             "name": "Generalised Newton"}
     ]
     compare_function_times(input_dict_list, n_repeats=3)
+    TODO: delete this function (replace with results comparison)
     """
     t_list = np.empty([len(input_dict_list), n_repeats])
     # Iterate through each input dictionary
@@ -455,9 +482,17 @@ def compare_function_times(input_dict_list, n_repeats=5, verbose=True):
                 t.std()), sep="\n", end=hline)
     return t_list
 
+def warmup():
+    """ Do warmup experiment """
+    np.random.seed(0)
+    x0 = 2*np.array([1.0, 1.0, 1.0])
+    f = objectives.Gaussian([1, 2, 3])
+    gradient_descent(f, x0, name="Warmup", n_iters=np.inf, t_lim=0.5,
+        eval_every=10000, verbose=True, line_search_flag=False)
 
 
 if __name__ == "__main__":
+    warmup()
     np.random.seed(0)
     nits = 2000
     x0 = 10*np.array([1.0, 1.0, 1.0])
@@ -471,10 +506,6 @@ if __name__ == "__main__":
     f = objectives.Gaussian([1, 2, 3])
     # f = objectives.Cauchy([1, 2, 3])
     # f = objectives.Cauchy([1, 1, 1])
-
-    # Do warmup experiment
-    gradient_descent(f, x0, lr, name="Warmup", n_iters=500, eval_every=100,
-        verbose=True)
 
     gradient_descent(f, x0, lr, n_iters=nits,
         eval_every=eval_every, line_search_flag=True,
